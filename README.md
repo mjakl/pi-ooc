@@ -35,6 +35,8 @@ pi install ./
 /ooc Challenge the current plan and tell me what we're missing.
 ```
 
+And of course my guilty pleasure: `/ooc commit`
+
 ## What happens
 
 When you run `/ooc ...`:
