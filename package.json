@@ -1,0 +1,58 @@
+{
+  "name": "@mjakl/pi-ooc",
+  "version": "0.1.0",
+  "description": "Pi extension that adds /ooc for out-of-context side questions using the current session context.",
+  "type": "module",
+  "main": "index.ts",
+  "files": [
+    "index.ts",
+    "README.md",
+    "LICENSE"
+  ],
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "scripts": {
+    "check": "npm pack --dry-run >/dev/null"
+  },
+  "keywords": [
+    "pi",
+    "extension",
+    "ooc",
+    "pi-package"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mjakl/pi-ooc.git"
+  },
+  "bugs": {
+    "url": "https://github.com/mjakl/pi-ooc/issues"
+  },
+  "homepage": "https://github.com/mjakl/pi-ooc#readme",
+  "publishConfig": {
+    "access": "public"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^25.2.3",
+    "typescript": "^5.9.3"
+  },
+  "peerDependencies": {
+    "@mariozechner/pi-ai": "*",
+    "@mariozechner/pi-coding-agent": "*",
+    "@mariozechner/pi-tui": "*"
+  },
+  "peerDependenciesMeta": {
+    "@mariozechner/pi-ai": {
+      "optional": true
+    },
+    "@mariozechner/pi-coding-agent": {
+      "optional": true
+    },
+    "@mariozechner/pi-tui": {
+      "optional": true
+    }
+  }
+}
