@@ -10,6 +10,8 @@ const DEFAULT_OVERLAY_WIDTH = "75%";
 const DEFAULT_OVERLAY_MAX_HEIGHT = "80%";
 const ACTIVITY_HISTORY_LIMIT = 8;
 const ACTIVITY_VISIBLE_ROWS = 3;
+const INFO_PANEL_ROWS = 1 + ACTIVITY_VISIBLE_ROWS;
+const CLOSE_CONFIRMATION_MODAL_ROWS = 5;
 
 function extractText(message: AssistantMessage): string {
   return message.content
@@ -31,6 +33,14 @@ function clamp(value: number, min: number, max: number): number {
 function padVisible(text: string, width: number): string {
   const safe = truncateToWidth(text, width, "");
   return safe + " ".repeat(Math.max(0, width - visibleWidth(safe)));
+}
+
+function centerVisible(text: string, width: number): string {
+  const safe = truncateToWidth(text, width, "");
+  const remaining = Math.max(0, width - visibleWidth(safe));
+  const left = Math.floor(remaining / 2);
+  const right = remaining - left;
+  return " ".repeat(left) + safe + " ".repeat(right);
 }
 
 function isAssistantMessage(message: unknown): message is AssistantMessage {
@@ -105,6 +115,8 @@ class OocOverlay implements Focusable {
   private cachedContentLines: string[] = [];
   private currentAction = "Preparing isolated side agent...";
   private activity: string[] = [];
+  private closeConfirmationPending = false;
+  private closeConfirmationRestore: { phase: string; detail: string } | undefined;
 
   constructor(
     private readonly tui: TUI,
@@ -118,6 +130,10 @@ class OocOverlay implements Focusable {
   setPhase(phase: string, detail?: string): void {
     this.phase = phase;
     if (detail !== undefined) this.detail = detail;
+    if (this.completed) {
+      this.closeConfirmationPending = false;
+      this.closeConfirmationRestore = undefined;
+    }
     this.requestRender();
   }
 
@@ -168,6 +184,8 @@ class OocOverlay implements Focusable {
     this.failed = message.stopReason === "error";
     this.phase = this.failed ? "Out-of-context request failed" : "Out-of-context response ready";
     this.currentAction = this.failed ? "failed" : "done";
+    this.closeConfirmationPending = false;
+    this.closeConfirmationRestore = undefined;
     this.detail = this.failed
       ? (message.errorMessage ?? formatUsage(message) ?? "")
       : (formatUsage(message) ?? "");
@@ -182,6 +200,8 @@ class OocOverlay implements Focusable {
     this.failed = false;
     this.phase = "Out-of-context response ready";
     this.currentAction = "done";
+    this.closeConfirmationPending = false;
+    this.closeConfirmationRestore = undefined;
     this.detail = detail;
     if (this.followOutput) {
       this.scrollTop = this.getMaxScroll();
@@ -193,6 +213,8 @@ class OocOverlay implements Focusable {
     this.completed = true;
     this.failed = true;
     this.currentAction = "failed";
+    this.closeConfirmationPending = false;
+    this.closeConfirmationRestore = undefined;
     if (!this.answer.trim()) {
       this.answer = message;
     }
@@ -203,9 +225,27 @@ class OocOverlay implements Focusable {
 
   handleInput(data: string): void {
     if (matchesKey(data, "escape") || data === "q") {
-      if (!this.completed) this.abort();
+      if (!this.completed) {
+        if (!this.closeConfirmationPending) {
+          this.closeConfirmationPending = true;
+          this.closeConfirmationRestore = { phase: this.phase, detail: this.detail };
+          this.setPhase("Side agent still running", "Press Esc or q again to abort and close");
+          this.addActivity("close requested while side agent was still running");
+          return;
+        }
+        this.abort();
+      }
       this.close();
       return;
+    }
+
+    if (this.closeConfirmationPending) {
+      const restore = this.closeConfirmationRestore;
+      this.closeConfirmationPending = false;
+      this.closeConfirmationRestore = undefined;
+      if (restore) {
+        this.setPhase(restore.phase, restore.detail);
+      }
     }
 
     const page = Math.max(3, this.getBodyHeight() - 1);
@@ -280,12 +320,18 @@ class OocOverlay implements Focusable {
 
     const rangeStart = contentLines.length === 0 ? 0 : this.scrollTop + 1;
     const rangeEnd = Math.min(contentLines.length, this.scrollTop + bodyHeight);
-    const footerText = [
-      "Esc/q close",
-      "↑↓ scroll",
-      "PgUp/PgDn page",
-      contentLines.length > 0 ? `${rangeStart}-${rangeEnd}/${contentLines.length}` : "0/0",
-    ].join(" • ");
+    const footerText = this.closeConfirmationPending
+      ? [
+          "Esc/q again abort+close",
+          "Any other key continue",
+          contentLines.length > 0 ? `${rangeStart}-${rangeEnd}/${contentLines.length}` : "0/0",
+        ].join(" • ")
+      : [
+          "Esc/q close",
+          "↑↓ scroll",
+          "PgUp/PgDn page",
+          contentLines.length > 0 ? `${rangeStart}-${rangeEnd}/${contentLines.length}` : "0/0",
+        ].join(" • ");
 
     const currentActionLine = truncateToWidth(
       `${this.theme.fg("muted", "Now:")} ${this.currentAction || "idle"}`,
@@ -298,14 +344,22 @@ class OocOverlay implements Focusable {
     lines.push(this.row(title, innerWidth));
     lines.push(this.row(promptLine, innerWidth));
     lines.push(this.row(statusLine, innerWidth));
-    lines.push(this.row(currentActionLine, innerWidth));
-    for (let i = 0; i < ACTIVITY_VISIBLE_ROWS; i++) {
-      const entry = recentActivity[i];
-      const prefix = i === 0 ? "Recent:" : "       ";
-      const line = entry
-        ? `${this.theme.fg("muted", prefix)} ${entry}`
-        : this.theme.fg("dim", i === 0 ? "Recent: -" : "");
-      lines.push(this.row(truncateToWidth(line, innerWidth), innerWidth));
+    if (this.closeConfirmationPending) {
+      lines.push(this.row("", innerWidth));
+      lines.push(this.row(centerVisible(this.theme.fg("warning", this.theme.bold("Side agent still running")), innerWidth), innerWidth));
+      lines.push(this.row(centerVisible(this.theme.fg("warning", "Press Esc or q again to abort and close"), innerWidth), innerWidth));
+      lines.push(this.row(centerVisible(this.theme.fg("dim", "Press any other key to continue"), innerWidth), innerWidth));
+      lines.push(this.row("", innerWidth));
+    } else {
+      lines.push(this.row(currentActionLine, innerWidth));
+      for (let i = 0; i < ACTIVITY_VISIBLE_ROWS; i++) {
+        const entry = recentActivity[i];
+        const prefix = i === 0 ? "Recent:" : "       ";
+        const line = entry
+          ? `${this.theme.fg("muted", prefix)} ${entry}`
+          : this.theme.fg("dim", i === 0 ? "Recent: -" : "");
+        lines.push(this.row(truncateToWidth(line, innerWidth), innerWidth));
+      }
     }
     lines.push(this.row("", innerWidth));
 
@@ -352,7 +406,9 @@ class OocOverlay implements Focusable {
   private getBodyHeight(): number {
     const terminalRows = this.tui.terminal.rows;
     const overlayRows = Math.max(12, Math.min(terminalRows - 6, Math.floor(terminalRows * 0.7)));
-    return Math.max(4, overlayRows - (7 + 1 + ACTIVITY_VISIBLE_ROWS));
+    const panelRows = this.closeConfirmationPending ? CLOSE_CONFIRMATION_MODAL_ROWS : INFO_PANEL_ROWS;
+    const extraRows = 7 + panelRows;
+    return Math.max(4, overlayRows - extraRows);
   }
 
   private getMaxScroll(): number {
