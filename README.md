@@ -6,6 +6,8 @@ Sometimes you want to ask pi a side question without dragging that detour back i
 
 Think of it as: *"use everything we know so far, but don't make this part of the main thread."*
 
+`pi-ooc` is intentionally minimal by design. If you want a more full-featured alternative, have a look at [`pi-btw`](https://github.com/dbachelder/pi-btw).
+
 ## Install
 
 ### Option 1: Install from npm (recommended)
