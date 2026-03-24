@@ -1,14 +1,14 @@
 # pi-ooc
 
-`pi-ooc` adds a `/ooc` command to pi.
+Sometimes you want to ask pi a side question without dragging that detour back into your main conversation.
 
-It lets you ask a side question with the **full current session context** while keeping the exchange **out of the main session history**.
+`pi-ooc` adds `/ooc`, which opens an isolated side-agent with the full current session context, shows the result in an overlay, and keeps that whole exchange out of your main session history.
 
-The result is shown in a TUI overlay, so you can read it immediately without polluting the main agent's context window.
+Think of it as: *"use everything we know so far, but don't make this part of the main thread."*
 
 ## Install
 
-### Option 1: Install from npm
+### Option 1: Install from npm (recommended)
 
 ```bash
 pi install npm:@mjakl/pi-ooc
@@ -31,50 +31,55 @@ pi install ./
 ```text
 /ooc What assumptions have we made so far?
 /ooc Give me three alternative designs for this refactor.
-/ooc Based on the current thread, what would you challenge?
+/ooc Inspect the repo and tell me where the auth flow starts.
+/ooc Challenge the current plan and tell me what we're missing.
 ```
 
-## What it does
+## What happens
 
-When you run `/ooc ...`, the extension:
+When you run `/ooc ...`:
 
-1. waits for the main agent to become idle if needed
-2. starts an **isolated child pi agent session**
-3. seeds that child session with the **current session context**
-4. uses the **current model** and **thinking level**
-5. lets the child agent run its normal loop, including tools
-6. streams the child agent's answer into a TUI overlay
-7. closes without adding either the question or the answer to the main session
+1. pi waits for the current agent to become idle if needed
+2. a separate side-agent session is started
+3. that side-agent gets the full current session context
+4. it uses the current model and thinking level
+5. it can run tools just like a normal agent session
+6. its output is streamed into a TUI overlay
+7. when you close it, nothing from that exchange is appended to your main session
+
+## Why use it?
+
+`/ooc` is useful when you want to:
+
+- ask a side question without cluttering the main thread
+- get a second opinion based on the current context
+- inspect the repo or run tools without turning that detour into part of the main conversation
+- challenge the current plan
+- explore alternatives before committing to a direction
+- do a quick isolated investigation and then return to your main flow
 
 ## Important behavior
 
-- The `/ooc` exchange is **not appended** to your current session.
-- The result is **shown in the TUI only**.
-- The command itself is an extension command, so it bypasses the normal agent turn.
-- The side agent is isolated from your **conversation history**, not from your **filesystem**.
-- If the side agent decides to use tools, those tool actions are real.
+This is the part that matters most:
 
-## Trade-offs
+- the `/ooc` conversation is **not added** to your current session history
+- the result is shown **only in the overlay**
+- the side-agent has the **same context** as your current session
+- the side-agent can use **tools**
+- if it uses tools that modify files or run commands, those effects are **real**
 
-`pi-ooc` now starts a **separate isolated agent session** instead of doing a direct model call.
+So `/ooc` is isolated from your **conversation history**, but not from your **working directory**.
 
-That means:
+## Closing the overlay
 
-- it gets the current session context
-- it uses the selected model and thinking level
-- it **can** run tools
-- it **can** mutate files
-- it does **not** add hidden follow-up turns to your main session
-- it behaves much more like a normal pi run, just in a side overlay
+If the side-agent is still running and you press `Esc` or `q`, `pi-ooc` will not close immediately.
 
-This makes it a good fit for:
+Instead it shows a confirmation modal:
 
-- side questions that may need tools
-- challenge prompts
-- repository inspection
-- alternative framing
-- architecture second opinions
-- isolated exploratory work you do not want in the main session history
+- press `Esc` or `q` again to abort and close
+- press any other key to keep it running and continue reading
+
+Once the side-agent is finished, `Esc` or `q` closes the overlay normally.
 
 ## Keys inside the overlay
 
@@ -83,15 +88,9 @@ This makes it a good fit for:
 - `PgUp` / `PgDn` - page scroll
 - `g` / `G` - jump to top / bottom
 
-## Why this exists
+## In one sentence
 
-Sometimes you want:
-
-- the benefit of the current thread's context
-- without spending even more context budget on the reply itself
-- and without turning the side question into part of the main conversation
-
-That's exactly what `/ooc` is for.
+`/ooc` gives you a fully context-aware side-agent in an overlay, without polluting your main session history.
 
 ## License
 

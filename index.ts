@@ -2,12 +2,13 @@ import { rm, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AssistantMessage } from "@mariozechner/pi-ai";
-import { createAgentSession, SessionManager, type AgentSessionEvent, type ExtensionAPI, type ExtensionCommandContext, type Theme } from "@mariozechner/pi-coding-agent";
+import { buildSessionContext, createAgentSession, SessionManager, type AgentSessionEvent, type ExtensionAPI, type ExtensionCommandContext, type Theme } from "@mariozechner/pi-coding-agent";
 import { matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Focusable, type TUI } from "@mariozechner/pi-tui";
 
 const COMMAND_NAME = "ooc";
 const DEFAULT_OVERLAY_WIDTH = "75%";
 const DEFAULT_OVERLAY_MAX_HEIGHT = "80%";
+const OVERLAY_HEIGHT_RATIO = 0.8;
 const ACTIVITY_HISTORY_LIMIT = 8;
 const ACTIVITY_VISIBLE_ROWS = 3;
 const INFO_PANEL_ROWS = 1 + ACTIVITY_VISIBLE_ROWS;
@@ -264,14 +265,14 @@ class OocOverlay implements Focusable {
       return;
     }
 
-    if (matchesKey(data, "pageup")) {
+    if (matchesKey(data, "pageUp")) {
       this.followOutput = false;
       this.scrollTop = clamp(this.scrollTop - page, 0, this.getMaxScroll());
       this.requestRender();
       return;
     }
 
-    if (matchesKey(data, "pagedown") || matchesKey(data, "space")) {
+    if (matchesKey(data, "pageDown") || matchesKey(data, "space")) {
       this.scrollTop = clamp(this.scrollTop + page, 0, this.getMaxScroll());
       this.followOutput = this.scrollTop >= this.getMaxScroll();
       this.requestRender();
@@ -405,9 +406,9 @@ class OocOverlay implements Focusable {
 
   private getBodyHeight(): number {
     const terminalRows = this.tui.terminal.rows;
-    const overlayRows = Math.max(12, Math.min(terminalRows - 6, Math.floor(terminalRows * 0.7)));
+    const overlayRows = Math.max(12, Math.min(terminalRows - 6, Math.floor(terminalRows * OVERLAY_HEIGHT_RATIO)));
     const panelRows = this.closeConfirmationPending ? CLOSE_CONFIRMATION_MODAL_ROWS : INFO_PANEL_ROWS;
-    const extraRows = 7 + panelRows;
+    const extraRows = 8 + panelRows;
     return Math.max(4, overlayRows - extraRows);
   }
 
@@ -441,7 +442,10 @@ async function createIsolatedSideSession(ctx: ExtensionCommandContext, pi: Exten
     });
 
     if (!sourceSessionFile) {
-      const parentContext = ctx.sessionManager.buildSessionContext();
+      const parentContext = buildSessionContext(
+        ctx.sessionManager.getEntries(),
+        ctx.sessionManager.getLeafId(),
+      );
       session.agent.replaceMessages(parentContext.messages);
     }
 
@@ -483,9 +487,13 @@ async function runOutOfContextQuery(
     return;
   }
 
-  const parentContext = ctx.sessionManager.buildSessionContext();
+  const parentContext = buildSessionContext(
+    ctx.sessionManager.getEntries(),
+    ctx.sessionManager.getLeafId(),
+  );
   const usage = ctx.getContextUsage();
-  const contextDetail = buildContextDetail(parentContext.messages.length, usage?.tokens);
+  const contextTokens = usage?.tokens ?? undefined;
+  const contextDetail = buildContextDetail(parentContext.messages.length, contextTokens);
 
   overlay.setPhase("Preparing isolated side agent...", contextDetail);
   overlay.updateActivity("preparing isolated side agent", "created isolated side-agent context");
@@ -493,6 +501,7 @@ async function runOutOfContextQuery(
   const { session, cleanup } = await createIsolatedSideSession(ctx, pi);
   let finalMessage: AssistantMessage | undefined;
   let turnNumber = 0;
+  const toolArgsByCallId = new Map<string, Record<string, unknown>>();
 
   const unsubscribe = session.subscribe((event: AgentSessionEvent) => {
     if (signal.aborted) return;
@@ -521,6 +530,7 @@ async function runOutOfContextQuery(
     }
 
     if (event.type === "tool_execution_start") {
+      toolArgsByCallId.set(event.toolCallId, event.args);
       const toolActivity = describeToolActivity(event.toolName, event.args);
       overlay.setPhase(`Running ${event.toolName}...`, summarizeToolArgs(event.toolName, event.args) || contextDetail);
       overlay.updateActivity(toolActivity, toolActivity);
@@ -533,7 +543,9 @@ async function runOutOfContextQuery(
     }
 
     if (event.type === "tool_execution_end") {
-      const toolActivity = describeToolActivity(event.toolName, event.args);
+      const toolArgs = toolArgsByCallId.get(event.toolCallId);
+      toolArgsByCallId.delete(event.toolCallId);
+      const toolActivity = describeToolActivity(event.toolName, toolArgs);
       const detail = event.isError ? `tool ${event.toolName} failed` : contextDetail;
       overlay.setPhase(
         event.isError ? `${event.toolName} failed` : `Completed ${event.toolName}`,
@@ -570,6 +582,17 @@ async function runOutOfContextQuery(
       return;
     }
 
+    if (event.type === "auto_retry_end") {
+      if (event.success) {
+        overlay.setPhase("Running isolated side agent...", contextDetail);
+        overlay.updateActivity("resuming after retry", `retry attempt ${event.attempt} succeeded`);
+      } else {
+        overlay.setPhase("Out-of-context request failed", event.finalError ?? "retry attempts exhausted");
+        overlay.updateActivity("retry attempts exhausted", event.finalError ?? "side agent retry attempts exhausted");
+      }
+      return;
+    }
+
     if (event.type === "agent_end") {
       finalMessage = findLastAssistantMessage(event.messages ?? []);
       overlay.updateActivity("finishing response", "side agent finished");
@@ -583,6 +606,7 @@ async function runOutOfContextQuery(
   try {
     overlay.setPhase("Running isolated side agent...", contextDetail);
     overlay.updateActivity("running isolated side agent", "prompt sent to side agent");
+    if (signal.aborted) return;
     await session.prompt(prompt);
     if (signal.aborted) return;
 
@@ -631,11 +655,19 @@ export default function (pi: ExtensionAPI) {
             theme,
             `${ctx.model!.provider}/${ctx.model!.id}`,
             prompt,
-            () => done(undefined),
+            () => {
+              overlay.dispose();
+              done(undefined);
+            },
             () => controller.abort(),
           );
 
-          void runOutOfContextQuery(ctx, pi, prompt, overlay, controller.signal);
+          void runOutOfContextQuery(ctx, pi, prompt, overlay, controller.signal)
+            .catch((error) => {
+              if (controller.signal.aborted) return;
+              const message = error instanceof Error ? error.message : String(error);
+              overlay.fail(message);
+            });
           return overlay;
         },
         {

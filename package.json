@@ -15,7 +15,8 @@
     ]
   },
   "scripts": {
-    "check": "npm pack --dry-run >/dev/null"
+    "check": "npm pack --dry-run >/dev/null",
+    "typecheck": "tsc --noEmit"
   },
   "keywords": [
     "pi",
@@ -36,6 +37,9 @@
   },
   "license": "MIT",
   "devDependencies": {
+    "@mariozechner/pi-ai": "*",
+    "@mariozechner/pi-coding-agent": "*",
+    "@mariozechner/pi-tui": "*",
     "@types/node": "^25.2.3",
     "typescript": "^5.9.3"
   },
@@ -43,16 +47,5 @@
     "@mariozechner/pi-ai": "*",
     "@mariozechner/pi-coding-agent": "*",
     "@mariozechner/pi-tui": "*"
-  },
-  "peerDependenciesMeta": {
-    "@mariozechner/pi-ai": {
-      "optional": true
-    },
-    "@mariozechner/pi-coding-agent": {
-      "optional": true
-    },
-    "@mariozechner/pi-tui": {
-      "optional": true
-    }
   }
 }
