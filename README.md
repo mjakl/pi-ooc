@@ -1,6 +1,6 @@
 # pi-ooc
 
-Sometimes you want to ask pi a side question without dragging that detour back into your main conversation.
+Sometimes you want to ask pi a side question without dragging that detour back into your main conversation, or did you ever wonder what your agent is doing, but you don't want to interrupt it? Call `/ooc what are you doing?`, and its clone will tell you without hurting the progress of the main agent.
 
 `pi-ooc` adds `/ooc` (think "out of context"), which opens an isolated side-agent with the full current session context, shows the result in an overlay, and keeps that whole exchange out of your main session history.
 
@@ -37,7 +37,7 @@ pi install ./
 /ooc Challenge the current plan and tell me what we're missing.
 ```
 
-And of course my guilty pleasure: `/ooc commit`
+And of course my guilty pleasure: `/ooc commit`. A nice extra is to `/ooc what are you doing?` while the main agent is working on something that looks off.
 
 ## What happens
 
