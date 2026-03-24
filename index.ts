@@ -8,6 +8,8 @@ import { matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Focus
 const COMMAND_NAME = "ooc";
 const DEFAULT_OVERLAY_WIDTH = "75%";
 const DEFAULT_OVERLAY_MAX_HEIGHT = "80%";
+const ACTIVITY_HISTORY_LIMIT = 8;
+const ACTIVITY_VISIBLE_ROWS = 3;
 
 function extractText(message: AssistantMessage): string {
   return message.content
@@ -71,6 +73,11 @@ function buildContextDetail(messageCount: number, tokens?: number): string {
     : `${messageCount} message(s) • full tools enabled`;
 }
 
+function describeToolActivity(toolName: string, args: Record<string, unknown> | undefined): string {
+  const summary = summarizeToolArgs(toolName, args);
+  return summary ? `${toolName}: ${summary}` : toolName;
+}
+
 interface SideSessionHandle {
   session: Awaited<ReturnType<typeof createAgentSession>>["session"];
   cleanup(): Promise<void>;
@@ -96,6 +103,8 @@ class OocOverlay implements Focusable {
   private cachedContentWidth = -1;
   private cachedContentText = "";
   private cachedContentLines: string[] = [];
+  private currentAction = "Preparing isolated side agent...";
+  private activity: string[] = [];
 
   constructor(
     private readonly tui: TUI,
@@ -109,6 +118,36 @@ class OocOverlay implements Focusable {
   setPhase(phase: string, detail?: string): void {
     this.phase = phase;
     if (detail !== undefined) this.detail = detail;
+    this.requestRender();
+  }
+
+  setCurrentAction(action: string): void {
+    this.currentAction = action;
+    this.requestRender();
+  }
+
+  addActivity(message: string): void {
+    const entry = message.trim();
+    if (!entry) return;
+    if (this.activity[this.activity.length - 1] === entry) return;
+    this.activity.push(entry);
+    if (this.activity.length > ACTIVITY_HISTORY_LIMIT) {
+      this.activity.splice(0, this.activity.length - ACTIVITY_HISTORY_LIMIT);
+    }
+    this.requestRender();
+  }
+
+  updateActivity(action: string, message?: string): void {
+    this.currentAction = action;
+    if (message) {
+      const entry = message.trim();
+      if (entry && this.activity[this.activity.length - 1] !== entry) {
+        this.activity.push(entry);
+        if (this.activity.length > ACTIVITY_HISTORY_LIMIT) {
+          this.activity.splice(0, this.activity.length - ACTIVITY_HISTORY_LIMIT);
+        }
+      }
+    }
     this.requestRender();
   }
 
@@ -128,6 +167,7 @@ class OocOverlay implements Focusable {
     this.completed = true;
     this.failed = message.stopReason === "error";
     this.phase = this.failed ? "Out-of-context request failed" : "Out-of-context response ready";
+    this.currentAction = this.failed ? "failed" : "done";
     this.detail = this.failed
       ? (message.errorMessage ?? formatUsage(message) ?? "")
       : (formatUsage(message) ?? "");
@@ -141,6 +181,7 @@ class OocOverlay implements Focusable {
     this.completed = true;
     this.failed = false;
     this.phase = "Out-of-context response ready";
+    this.currentAction = "done";
     this.detail = detail;
     if (this.followOutput) {
       this.scrollTop = this.getMaxScroll();
@@ -151,6 +192,7 @@ class OocOverlay implements Focusable {
   fail(message: string): void {
     this.completed = true;
     this.failed = true;
+    this.currentAction = "failed";
     if (!this.answer.trim()) {
       this.answer = message;
     }
@@ -245,11 +287,26 @@ class OocOverlay implements Focusable {
       contentLines.length > 0 ? `${rangeStart}-${rangeEnd}/${contentLines.length}` : "0/0",
     ].join(" • ");
 
+    const currentActionLine = truncateToWidth(
+      `${this.theme.fg("muted", "Now:")} ${this.currentAction || "idle"}`,
+      innerWidth,
+    );
+    const recentActivity = this.activity.slice(-ACTIVITY_VISIBLE_ROWS).reverse();
+
     const lines: string[] = [];
     lines.push(this.theme.fg("border", `╭${"─".repeat(innerWidth)}╮`));
     lines.push(this.row(title, innerWidth));
     lines.push(this.row(promptLine, innerWidth));
     lines.push(this.row(statusLine, innerWidth));
+    lines.push(this.row(currentActionLine, innerWidth));
+    for (let i = 0; i < ACTIVITY_VISIBLE_ROWS; i++) {
+      const entry = recentActivity[i];
+      const prefix = i === 0 ? "Recent:" : "       ";
+      const line = entry
+        ? `${this.theme.fg("muted", prefix)} ${entry}`
+        : this.theme.fg("dim", i === 0 ? "Recent: -" : "");
+      lines.push(this.row(truncateToWidth(line, innerWidth), innerWidth));
+    }
     lines.push(this.row("", innerWidth));
 
     for (const line of visibleLines) {
@@ -295,7 +352,7 @@ class OocOverlay implements Focusable {
   private getBodyHeight(): number {
     const terminalRows = this.tui.terminal.rows;
     const overlayRows = Math.max(12, Math.min(terminalRows - 6, Math.floor(terminalRows * 0.7)));
-    return Math.max(5, overlayRows - 7);
+    return Math.max(4, overlayRows - (7 + 1 + ACTIVITY_VISIBLE_ROWS));
   }
 
   private getMaxScroll(): number {
@@ -359,6 +416,7 @@ async function runOutOfContextQuery(
 ): Promise<void> {
   if (ctx.hasPendingMessages()) {
     overlay.setPhase("Waiting for the main agent to become idle...");
+    overlay.updateActivity("waiting for the main agent to become idle", "waiting for main agent to become idle");
     await ctx.waitForIdle();
   }
 
@@ -374,6 +432,7 @@ async function runOutOfContextQuery(
   const contextDetail = buildContextDetail(parentContext.messages.length, usage?.tokens);
 
   overlay.setPhase("Preparing isolated side agent...", contextDetail);
+  overlay.updateActivity("preparing isolated side agent", "created isolated side-agent context");
 
   const { session, cleanup } = await createIsolatedSideSession(ctx, pi);
   let finalMessage: AssistantMessage | undefined;
@@ -381,13 +440,21 @@ async function runOutOfContextQuery(
   const unsubscribe = session.subscribe((event: AgentSessionEvent) => {
     if (signal.aborted) return;
 
+    if (event.type === "turn_start") {
+      overlay.updateActivity(`starting turn ${event.turnIndex + 1}`, `turn ${event.turnIndex + 1} started`);
+      return;
+    }
+
     if (event.type === "message_update") {
       const update = event.assistantMessageEvent;
       if (update.type === "thinking_start") {
         overlay.setPhase("Side agent is thinking...", contextDetail);
+        overlay.updateActivity("thinking", "assistant is thinking");
       } else if (update.type === "text_start") {
         overlay.setPhase("Streaming side-agent answer...", contextDetail);
+        overlay.updateActivity("writing answer", "assistant started writing the answer");
       } else if (update.type === "text_delta") {
+        overlay.setCurrentAction("writing answer");
         overlay.appendText(update.delta);
       } else if (update.type === "error") {
         overlay.fail(update.error?.errorMessage ?? "Side agent failed.");
@@ -396,22 +463,39 @@ async function runOutOfContextQuery(
     }
 
     if (event.type === "tool_execution_start") {
-      const detail = summarizeToolArgs(event.toolName, event.args);
-      overlay.setPhase(`Running ${event.toolName}...`, detail || contextDetail);
+      const toolActivity = describeToolActivity(event.toolName, event.args);
+      overlay.setPhase(`Running ${event.toolName}...`, summarizeToolArgs(event.toolName, event.args) || contextDetail);
+      overlay.updateActivity(toolActivity, toolActivity);
+      return;
+    }
+
+    if (event.type === "tool_execution_update") {
+      overlay.setCurrentAction(`working in ${event.toolName}`);
       return;
     }
 
     if (event.type === "tool_execution_end") {
+      const toolActivity = describeToolActivity(event.toolName, event.args);
       const detail = event.isError ? `tool ${event.toolName} failed` : contextDetail;
       overlay.setPhase(
         event.isError ? `${event.toolName} failed` : `Completed ${event.toolName}`,
         detail,
       );
+      overlay.updateActivity(
+        event.isError ? `${event.toolName} failed` : "waiting for the next step",
+        event.isError ? `${toolActivity} (failed)` : `${toolActivity} (done)`,
+      );
+      return;
+    }
+
+    if (event.type === "turn_end") {
+      overlay.updateActivity("deciding next step", `turn ${event.turnIndex + 1} finished`);
       return;
     }
 
     if (event.type === "auto_compaction_start") {
       overlay.setPhase("Compacting side-agent context...", contextDetail);
+      overlay.updateActivity("compacting context", "compacting side-agent context");
       return;
     }
 
@@ -420,11 +504,16 @@ async function runOutOfContextQuery(
         "Retrying after transient error...",
         `attempt ${event.attempt}/${event.maxAttempts}`,
       );
+      overlay.updateActivity(
+        `retrying after transient error (attempt ${event.attempt}/${event.maxAttempts})`,
+        `retry ${event.attempt}/${event.maxAttempts} scheduled`,
+      );
       return;
     }
 
     if (event.type === "agent_end") {
       finalMessage = findLastAssistantMessage(event.messages ?? []);
+      overlay.updateActivity("finishing response", "side agent finished");
     }
   });
 
@@ -434,6 +523,7 @@ async function runOutOfContextQuery(
 
   try {
     overlay.setPhase("Running isolated side agent...", contextDetail);
+    overlay.updateActivity("running isolated side agent", "prompt sent to side agent");
     await session.prompt(prompt);
     if (signal.aborted) return;
 
