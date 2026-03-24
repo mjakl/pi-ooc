@@ -249,8 +249,6 @@ class OocOverlay implements Focusable {
       }
     }
 
-    const page = Math.max(3, this.getBodyHeight() - 1);
-
     if (matchesKey(data, "up") || data === "k") {
       this.followOutput = false;
       this.scrollTop = clamp(this.scrollTop - 1, 0, this.getMaxScroll());
@@ -260,20 +258,6 @@ class OocOverlay implements Focusable {
 
     if (matchesKey(data, "down") || data === "j") {
       this.scrollTop = clamp(this.scrollTop + 1, 0, this.getMaxScroll());
-      this.followOutput = this.scrollTop >= this.getMaxScroll();
-      this.requestRender();
-      return;
-    }
-
-    if (matchesKey(data, "pageUp")) {
-      this.followOutput = false;
-      this.scrollTop = clamp(this.scrollTop - page, 0, this.getMaxScroll());
-      this.requestRender();
-      return;
-    }
-
-    if (matchesKey(data, "pageDown") || matchesKey(data, "space")) {
-      this.scrollTop = clamp(this.scrollTop + page, 0, this.getMaxScroll());
       this.followOutput = this.scrollTop >= this.getMaxScroll();
       this.requestRender();
       return;
@@ -330,7 +314,7 @@ class OocOverlay implements Focusable {
       : [
           "Esc/q close",
           "↑↓ scroll",
-          "PgUp/PgDn page",
+          "g/G top/bottom",
           contentLines.length > 0 ? `${rangeStart}-${rangeEnd}/${contentLines.length}` : "0/0",
         ].join(" • ");
 

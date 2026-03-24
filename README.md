@@ -89,7 +89,6 @@ Once the side-agent is finished, `Esc` or `q` closes the overlay normally.
 
 - `Esc` or `q` - close
 - `↑` / `↓` - scroll
-- `PgUp` / `PgDn` - page scroll
 - `g` / `G` - jump to top / bottom
 
 ## In one sentence
