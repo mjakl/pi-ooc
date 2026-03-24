@@ -2,7 +2,7 @@
 
 Sometimes you want to ask pi a side question without dragging that detour back into your main conversation.
 
-`pi-ooc` adds `/ooc`, which opens an isolated side-agent with the full current session context, shows the result in an overlay, and keeps that whole exchange out of your main session history.
+`pi-ooc` adds `/ooc` (think "out of context"), which opens an isolated side-agent with the full current session context, shows the result in an overlay, and keeps that whole exchange out of your main session history.
 
 Think of it as: *"use everything we know so far, but don't make this part of the main thread."*
 
