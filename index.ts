@@ -436,12 +436,14 @@ async function runOutOfContextQuery(
 
   const { session, cleanup } = await createIsolatedSideSession(ctx, pi);
   let finalMessage: AssistantMessage | undefined;
+  let turnNumber = 0;
 
   const unsubscribe = session.subscribe((event: AgentSessionEvent) => {
     if (signal.aborted) return;
 
     if (event.type === "turn_start") {
-      overlay.updateActivity(`starting turn ${event.turnIndex + 1}`, `turn ${event.turnIndex + 1} started`);
+      turnNumber += 1;
+      overlay.updateActivity(`starting turn ${turnNumber}`, `turn ${turnNumber} started`);
       return;
     }
 
@@ -489,7 +491,8 @@ async function runOutOfContextQuery(
     }
 
     if (event.type === "turn_end") {
-      overlay.updateActivity("deciding next step", `turn ${event.turnIndex + 1} finished`);
+      const label = turnNumber > 0 ? `turn ${turnNumber}` : "turn";
+      overlay.updateActivity("deciding next step", `${label} finished`);
       return;
     }
 
