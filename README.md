@@ -39,40 +39,42 @@ pi install ./
 When you run `/ooc ...`, the extension:
 
 1. waits for the main agent to become idle if needed
-2. snapshots the **current session context** via `buildSessionContext()`
-3. uses the **current model** and **current system prompt**
-4. sends your `/ooc` question together with that context directly to the model
-5. streams the answer into a TUI overlay
-6. closes without adding either the question or the answer to the main session
+2. starts an **isolated child pi agent session**
+3. seeds that child session with the **current session context**
+4. uses the **current model** and **thinking level**
+5. lets the child agent run its normal loop, including tools
+6. streams the child agent's answer into a TUI overlay
+7. closes without adding either the question or the answer to the main session
 
 ## Important behavior
 
 - The `/ooc` exchange is **not appended** to your current session.
 - The result is **shown in the TUI only**.
 - The command itself is an extension command, so it bypasses the normal agent turn.
-- Session context includes the current branch as built by pi, including things like compaction summaries and branch summaries.
+- The side agent is isolated from your **conversation history**, not from your **filesystem**.
+- If the side agent decides to use tools, those tool actions are real.
 
 ## Trade-offs
 
-`pi-ooc` intentionally performs a **direct model call** instead of starting a second full agent loop.
+`pi-ooc` now starts a **separate isolated agent session** instead of doing a direct model call.
 
 That means:
 
 - it gets the current session context
 - it uses the selected model and thinking level
-- it does **not** run tools
-- it does **not** mutate files
-- it does **not** create hidden follow-up turns in your main session
+- it **can** run tools
+- it **can** mutate files
+- it does **not** add hidden follow-up turns to your main session
+- it behaves much more like a normal pi run, just in a side overlay
 
 This makes it a good fit for:
 
-- side questions
+- side questions that may need tools
 - challenge prompts
-- summarization
+- repository inspection
 - alternative framing
 - architecture second opinions
-
-If you want a fully isolated tool-using side agent instead, `pi-subagent` is the better fit.
+- isolated exploratory work you do not want in the main session history
 
 ## Keys inside the overlay
 

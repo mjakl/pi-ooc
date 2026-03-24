@@ -1,5 +1,8 @@
-import { streamSimple, type AssistantMessage, type Message, type Model } from "@mariozechner/pi-ai";
-import type { ExtensionAPI, ExtensionCommandContext, Theme } from "@mariozechner/pi-coding-agent";
+import { rm, mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { AssistantMessage } from "@mariozechner/pi-ai";
+import { createAgentSession, SessionManager, type AgentSessionEvent, type ExtensionAPI, type ExtensionCommandContext, type Theme } from "@mariozechner/pi-coding-agent";
 import { matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Focusable, type TUI } from "@mariozechner/pi-tui";
 
 const COMMAND_NAME = "ooc";
@@ -28,11 +31,61 @@ function padVisible(text: string, width: number): string {
   return safe + " ".repeat(Math.max(0, width - visibleWidth(safe)));
 }
 
+function isAssistantMessage(message: unknown): message is AssistantMessage {
+  return typeof message === "object" && message !== null && (message as { role?: string }).role === "assistant";
+}
+
+function findLastAssistantMessage(messages: unknown[]): AssistantMessage | undefined {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i];
+    if (isAssistantMessage(message)) return message;
+  }
+  return undefined;
+}
+
+function summarizeToolArgs(toolName: string, args: Record<string, unknown> | undefined): string {
+  if (!args) return "";
+
+  if (toolName === "bash" && typeof args.command === "string") {
+    return truncateToWidth(args.command, 100);
+  }
+
+  if (typeof args.path === "string") {
+    return truncateToWidth(args.path, 100);
+  }
+
+  if (typeof args.pattern === "string") {
+    return truncateToWidth(args.pattern, 100);
+  }
+
+  try {
+    return truncateToWidth(JSON.stringify(args), 100);
+  } catch {
+    return "";
+  }
+}
+
+function buildContextDetail(messageCount: number, tokens?: number): string {
+  return tokens !== undefined
+    ? `${messageCount} message(s) • approx ${tokens} token(s) • full tools enabled`
+    : `${messageCount} message(s) • full tools enabled`;
+}
+
+interface SideSessionHandle {
+  session: Awaited<ReturnType<typeof createAgentSession>>["session"];
+  cleanup(): Promise<void>;
+}
+
+async function removeTempDir(path: string | undefined): Promise<void> {
+  if (!path) return;
+  await rm(path, { recursive: true, force: true });
+}
+
 class OocOverlay implements Focusable {
   focused = false;
 
   private answer = "";
-  private phase = "Preparing out-of-context request...";
+  private phase = "Preparing isolated side agent...";
   private detail = "";
   private completed = false;
   private failed = false;
@@ -40,6 +93,9 @@ class OocOverlay implements Focusable {
   private scrollTop = 0;
   private lastContentWidth = 58;
   private disposed = false;
+  private cachedContentWidth = -1;
+  private cachedContentText = "";
+  private cachedContentLines: string[] = [];
 
   constructor(
     private readonly tui: TUI,
@@ -75,6 +131,17 @@ class OocOverlay implements Focusable {
     this.detail = this.failed
       ? (message.errorMessage ?? formatUsage(message) ?? "")
       : (formatUsage(message) ?? "");
+    if (this.followOutput) {
+      this.scrollTop = this.getMaxScroll();
+    }
+    this.requestRender();
+  }
+
+  complete(detail = ""): void {
+    this.completed = true;
+    this.failed = false;
+    this.phase = "Out-of-context response ready";
+    this.detail = detail;
     if (this.followOutput) {
       this.scrollTop = this.getMaxScroll();
     }
@@ -214,8 +281,15 @@ class OocOverlay implements Focusable {
       ? this.answer
       : this.completed
         ? "(No text output.)"
-        : "Waiting for model output...";
-    return wrapTextWithAnsi(text, contentWidth);
+        : "Waiting for side-agent output...";
+
+    if (this.cachedContentWidth !== contentWidth || this.cachedContentText !== text) {
+      this.cachedContentWidth = contentWidth;
+      this.cachedContentText = text;
+      this.cachedContentLines = wrapTextWithAnsi(text, contentWidth);
+    }
+
+    return this.cachedContentLines;
   }
 
   private getBodyHeight(): number {
@@ -234,6 +308,48 @@ class OocOverlay implements Focusable {
   }
 }
 
+async function createIsolatedSideSession(ctx: ExtensionCommandContext, pi: ExtensionAPI): Promise<SideSessionHandle> {
+  const sourceSessionFile = ctx.sessionManager.getSessionFile();
+  let tempDir: string | undefined;
+
+  try {
+    let sessionManager = SessionManager.inMemory(ctx.cwd);
+    if (sourceSessionFile) {
+      tempDir = await mkdtemp(join(tmpdir(), "pi-ooc-"));
+      sessionManager = SessionManager.forkFrom(sourceSessionFile, ctx.cwd, tempDir);
+    }
+
+    const { session } = await createAgentSession({
+      cwd: ctx.cwd,
+      modelRegistry: ctx.modelRegistry,
+      model: ctx.model ?? undefined,
+      thinkingLevel: pi.getThinkingLevel(),
+      sessionManager,
+    });
+
+    if (!sourceSessionFile) {
+      const parentContext = ctx.sessionManager.buildSessionContext();
+      session.agent.replaceMessages(parentContext.messages);
+    }
+
+    return {
+      session,
+      cleanup: async () => {
+        try {
+          await session.abort();
+        } catch {
+          // Ignore cleanup abort errors.
+        }
+        session.dispose();
+        await removeTempDir(tempDir);
+      },
+    };
+  } catch (error) {
+    await removeTempDir(tempDir);
+    throw error;
+  }
+}
+
 async function runOutOfContextQuery(
   ctx: ExtensionCommandContext,
   pi: ExtensionAPI,
@@ -248,79 +364,99 @@ async function runOutOfContextQuery(
 
   if (signal.aborted) return;
 
-  const model = ctx.model;
-  if (!model) {
+  if (!ctx.model) {
     overlay.fail("No model selected.");
     return;
   }
 
-  const apiKey = await ctx.modelRegistry.getApiKey(model);
-  if (signal.aborted) return;
-  if (!apiKey) {
-    overlay.fail(`No API key available for ${model.provider}/${model.id}.`);
-    return;
-  }
-
-  overlay.setPhase("Collecting full session context...");
-  const sessionContext = ctx.sessionManager.buildSessionContext();
-  if (signal.aborted) return;
-  const systemPrompt = ctx.getSystemPrompt();
+  const parentContext = ctx.sessionManager.buildSessionContext();
   const usage = ctx.getContextUsage();
-  const contextDetail = usage
-    ? `${sessionContext.messages.length} message(s) • approx ${usage.tokens} token(s)`
-    : `${sessionContext.messages.length} message(s)`;
+  const contextDetail = buildContextDetail(parentContext.messages.length, usage?.tokens);
 
-  const queryMessage: Message = {
-    role: "user",
-    content: [{ type: "text", text: prompt }],
-    timestamp: Date.now(),
-  };
+  overlay.setPhase("Preparing isolated side agent...", contextDetail);
 
-  const thinkingLevel = pi.getThinkingLevel();
-  overlay.setPhase("Asking the model out of context...", contextDetail);
+  const { session, cleanup } = await createIsolatedSideSession(ctx, pi);
+  let finalMessage: AssistantMessage | undefined;
 
-  const responseStream = streamSimple(
-    model as Model<any>,
-    {
-      systemPrompt,
-      messages: [...sessionContext.messages, queryMessage],
-    },
-    {
-      apiKey,
-      signal,
-      reasoning: thinkingLevel === "off" ? undefined : thinkingLevel,
-      sessionId: `${ctx.sessionManager.getSessionId()}:ooc`,
-    },
-  );
+  const unsubscribe = session.subscribe((event: AgentSessionEvent) => {
+    if (signal.aborted) return;
 
-  try {
-    for await (const event of responseStream) {
-      if (signal.aborted) return;
-
-      if (event.type === "thinking_start") {
-        overlay.setPhase("Model is thinking...", contextDetail);
-      } else if (event.type === "text_start") {
-        overlay.setPhase("Streaming out-of-context answer...", contextDetail);
-      } else if (event.type === "text_delta") {
-        overlay.appendText(event.delta);
-      } else if (event.type === "error") {
-        overlay.fail(event.error.errorMessage ?? "Model returned an error.");
-        return;
+    if (event.type === "message_update") {
+      const update = event.assistantMessageEvent;
+      if (update.type === "thinking_start") {
+        overlay.setPhase("Side agent is thinking...", contextDetail);
+      } else if (update.type === "text_start") {
+        overlay.setPhase("Streaming side-agent answer...", contextDetail);
+      } else if (update.type === "text_delta") {
+        overlay.appendText(update.delta);
+      } else if (update.type === "error") {
+        overlay.fail(update.error?.errorMessage ?? "Side agent failed.");
       }
+      return;
     }
 
-    const finalMessage = await responseStream.result();
-    overlay.finish(finalMessage);
+    if (event.type === "tool_execution_start") {
+      const detail = summarizeToolArgs(event.toolName, event.args);
+      overlay.setPhase(`Running ${event.toolName}...`, detail || contextDetail);
+      return;
+    }
+
+    if (event.type === "tool_execution_end") {
+      const detail = event.isError ? `tool ${event.toolName} failed` : contextDetail;
+      overlay.setPhase(
+        event.isError ? `${event.toolName} failed` : `Completed ${event.toolName}`,
+        detail,
+      );
+      return;
+    }
+
+    if (event.type === "auto_compaction_start") {
+      overlay.setPhase("Compacting side-agent context...", contextDetail);
+      return;
+    }
+
+    if (event.type === "auto_retry_start") {
+      overlay.setPhase(
+        "Retrying after transient error...",
+        `attempt ${event.attempt}/${event.maxAttempts}`,
+      );
+      return;
+    }
+
+    if (event.type === "agent_end") {
+      finalMessage = findLastAssistantMessage(event.messages ?? []);
+    }
+  });
+
+  signal.addEventListener("abort", () => {
+    void session.abort();
+  }, { once: true });
+
+  try {
+    overlay.setPhase("Running isolated side agent...", contextDetail);
+    await session.prompt(prompt);
+    if (signal.aborted) return;
+
+    finalMessage ??= findLastAssistantMessage(session.messages ?? []);
+
+    if (finalMessage) {
+      overlay.finish(finalMessage);
+    } else {
+      overlay.complete();
+    }
   } catch (error) {
     if (signal.aborted) return;
     const message = error instanceof Error ? error.message : String(error);
     overlay.fail(message);
+  } finally {
+    unsubscribe();
+    await cleanup();
   }
 }
 
 export default function (pi: ExtensionAPI) {
   pi.registerCommand(COMMAND_NAME, {
-    description: "Ask the current model a side question using the full current session context, without adding the exchange to the main session",
+    description: "Ask a side question in an isolated agent session seeded with the current session context; the exchange stays out of the main session",
     handler: async (args, ctx) => {
       if (!ctx.hasUI) {
         console.error(`/${COMMAND_NAME} requires a UI-capable mode.`);
