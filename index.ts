@@ -1,9 +1,9 @@
 import { rm, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { AssistantMessage } from "@mariozechner/pi-ai";
-import { buildSessionContext, createAgentSession, SessionManager, type AgentSessionEvent, type ExtensionAPI, type ExtensionCommandContext, type Theme } from "@mariozechner/pi-coding-agent";
-import { matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Focusable, type TUI } from "@mariozechner/pi-tui";
+import type { AssistantMessage } from "@earendil-works/pi-ai";
+import { buildSessionContext, createAgentSession, SessionManager, type AgentSessionEvent, type ExtensionAPI, type ExtensionCommandContext, type Theme } from "@earendil-works/pi-coding-agent";
+import { matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Focusable, type TUI } from "@earendil-works/pi-tui";
 
 const COMMAND_NAME = "ooc";
 const DEFAULT_OVERLAY_WIDTH = "75%";
@@ -430,7 +430,7 @@ async function createIsolatedSideSession(ctx: ExtensionCommandContext, pi: Exten
         ctx.sessionManager.getEntries(),
         ctx.sessionManager.getLeafId(),
       );
-      session.agent.replaceMessages(parentContext.messages);
+      session.agent.state.messages = parentContext.messages;
     }
 
     return {
@@ -548,7 +548,7 @@ async function runOutOfContextQuery(
       return;
     }
 
-    if (event.type === "auto_compaction_start") {
+    if (event.type === "compaction_start" && (event.reason === "threshold" || event.reason === "overflow")) {
       overlay.setPhase("Compacting side-agent context...", contextDetail);
       overlay.updateActivity("compacting context", "compacting side-agent context");
       return;
