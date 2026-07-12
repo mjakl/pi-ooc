@@ -47,7 +47,7 @@ When you run `/ooc ...`:
 2. a separate side-agent session is started
 3. that side-agent gets the full current session context
 4. it uses the current model and thinking level
-5. it can run tools just like a normal agent session
+5. it can use pi's built-in coding tools
 6. its output is streamed into a TUI overlay
 7. when you close it, nothing from that exchange is appended to your main session
 
@@ -69,7 +69,8 @@ This is the part that matters most:
 - the `/ooc` conversation is **not added** to your current session history
 - the result is shown **only in the overlay**
 - the side-agent has the **same context** as your current session
-- the side-agent can use **tools**
+- the side-agent can use pi's built-in coding tools (`read`, `bash`, `edit`, and `write`)
+- extension-provided tools are intentionally not loaded; an extension's background work could outlive the short-lived side session
 - if it uses tools that modify files or run commands, those effects are **real**
 
 So `/ooc` is isolated from your **conversation history**, but not from your **working directory**.

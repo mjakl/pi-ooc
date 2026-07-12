@@ -2,7 +2,7 @@ import { rm, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
-import { buildSessionContext, createAgentSession, SessionManager, type AgentSessionEvent, type ExtensionAPI, type ExtensionCommandContext, type Theme } from "@earendil-works/pi-coding-agent";
+import { buildSessionContext, createAgentSession, DefaultResourceLoader, getAgentDir, SessionManager, type AgentSessionEvent, type ExtensionAPI, type ExtensionCommandContext, type Theme } from "@earendil-works/pi-coding-agent";
 import { matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Focusable, type TUI } from "@earendil-works/pi-tui";
 
 const COMMAND_NAME = "ooc";
@@ -80,8 +80,8 @@ function summarizeToolArgs(toolName: string, args: Record<string, unknown> | und
 
 function buildContextDetail(messageCount: number, tokens?: number): string {
   return tokens !== undefined
-    ? `${messageCount} message(s) • approx ${tokens} token(s) • full tools enabled`
-    : `${messageCount} message(s) • full tools enabled`;
+    ? `${messageCount} message(s) • approx ${tokens} token(s) • built-in coding tools enabled`
+    : `${messageCount} message(s) • built-in coding tools enabled`;
 }
 
 function describeToolActivity(toolName: string, args: Record<string, unknown> | undefined): string {
@@ -417,12 +417,22 @@ async function createIsolatedSideSession(ctx: ExtensionCommandContext, pi: Exten
       sessionManager = SessionManager.forkFrom(sourceSessionFile, ctx.cwd, tempDir);
     }
 
+    // Side sessions are short-lived. Do not load extensions whose asynchronous
+    // work could outlive the session and call into an invalidated context.
+    const resourceLoader = new DefaultResourceLoader({
+      cwd: ctx.cwd,
+      agentDir: getAgentDir(),
+      noExtensions: true,
+    });
+    await resourceLoader.reload();
+
     const { session } = await createAgentSession({
       cwd: ctx.cwd,
       modelRegistry: ctx.modelRegistry,
       model: ctx.model ?? undefined,
       thinkingLevel: pi.getThinkingLevel(),
       sessionManager,
+      resourceLoader,
     });
 
     if (!sourceSessionFile) {
