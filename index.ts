@@ -465,9 +465,11 @@ async function createIsolatedSideSession(ctx: ExtensionCommandContext, pi: Exten
     });
     await resourceLoader.reload();
 
+    // No model runtime is passed: pi builds its own from the same agent dir the
+    // main session uses, and the extension context only exposes the synchronous
+    // registry, which is no longer accepted here.
     const { session } = await createAgentSession({
       cwd: ctx.cwd,
-      modelRegistry: ctx.modelRegistry,
       model: ctx.model ?? undefined,
       thinkingLevel: pi.getThinkingLevel(),
       sessionManager,
