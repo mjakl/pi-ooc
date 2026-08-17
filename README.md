@@ -37,7 +37,7 @@ pi install ./
 /ooc Challenge the current plan and tell me what we're missing.
 ```
 
-And of course my guilty pleasure: `/ooc commit`. A nice extra is to `/ooc what are you doing?` while the main agent is working on something that looks off.
+A nice extra is to `/ooc what are you doing?` while the main agent is working on something that looks off.
 
 ## What happens
 
@@ -47,9 +47,10 @@ When you run `/ooc ...`:
 2. a separate side-agent session is started
 3. that side-agent gets the full current session context
 4. it uses the current model and thinking level
-5. it can use pi's built-in coding tools
-6. its output is streamed into a TUI overlay
-7. when you close it, nothing from that exchange is appended to your main session
+5. it is told it is a read-only agent that only answers the question, briefly
+6. it keeps pi's built-in tools, but `edit` and `write` calls are blocked
+7. its output is streamed into a TUI overlay
+8. when you close it, nothing from that exchange is appended to your main session
 
 ## Why use it?
 
@@ -69,9 +70,11 @@ This is the part that matters most:
 - the `/ooc` conversation is **not added** to your current session history
 - the result is shown **only in the overlay**
 - the side-agent has the **same context** as your current session
-- the side-agent can use pi's built-in coding tools (`read`, `bash`, `edit`, and `write`)
+- the side-agent is instructed to be **read-only** and to answer **short and to the point**
+- `edit` and `write` calls are **blocked** and come back as an error the side-agent can read
 - extension-provided tools are intentionally not loaded; an extension's background work could outlive the short-lived side session
-- if it uses tools that modify files or run commands, those effects are **real**
+- `bash` is still `bash`; the read-only rule is an instruction, not a sandbox, so a command that modifies something has **real** effects
+- the side-agent sends the same tools and the same system prompt as your main session, so the provider's prompt cache is reused instead of paid for again; the read-only instructions ride at the end of the question for that reason
 
 So `/ooc` is isolated from your **conversation history**, but not from your **working directory**.
 

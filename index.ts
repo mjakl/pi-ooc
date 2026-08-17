@@ -2,10 +2,48 @@ import { rm, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
-import { buildSessionContext, createAgentSession, DefaultResourceLoader, getAgentDir, SessionManager, type AgentSessionEvent, type ExtensionAPI, type ExtensionCommandContext, type Theme } from "@earendil-works/pi-coding-agent";
+import { buildSessionContext, createAgentSession, DefaultResourceLoader, getAgentDir, SessionManager, type AgentSessionEvent, type ExtensionAPI, type ExtensionCommandContext, type ExtensionFactory, type Theme } from "@earendil-works/pi-coding-agent";
 import { matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Focusable, type TUI } from "@earendil-works/pi-tui";
 
 const COMMAND_NAME = "ooc";
+const BLOCKED_TOOLS = new Set(["edit", "write"]);
+const BLOCKED_TOOL_REASON =
+  "Blocked: /ooc runs a read-only side agent. Describe the change instead of making it.";
+
+// Appended after the question instead of to the system prompt. Providers cache
+// the request prefix in the order tools, system prompt, messages, so anything
+// added further up would invalidate the main session's cached context and force
+// the whole forked history to be processed again.
+const SIDE_AGENT_INSTRUCTIONS = `---
+
+How to answer the question above:
+
+- You are an out-of-context side agent. You are not the agent working on this
+  session and you are not in charge of it. Answering the question is your only
+  job.
+- You are read-only. Do not create, change, or delete files. Do not run commands
+  that change files, process state, or any external system: no commit, push,
+  install, service start or stop, no mutation of external data.
+- The edit and write tools are blocked. Bash is available for read-only commands
+  only.
+- Reading, searching, and any other information gathering is allowed.
+- If the question asks for a change, describe the change instead of making it.
+- Answer short and to the point: a few sentences or a short list. No preamble, no
+  restating of the question, no lengthy explanation unless it is asked for.`;
+
+// Inline extensions are loaded even when extension discovery is off. The guard
+// registers no tools and does not touch the system prompt, so blocking mutating
+// calls costs nothing from the cached prefix.
+const readOnlyGuard: ExtensionFactory = (sidePi) => {
+  sidePi.on("tool_call", (event) =>
+    BLOCKED_TOOLS.has(event.toolName) ? { block: true, reason: BLOCKED_TOOL_REASON } : undefined,
+  );
+};
+
+function buildSideAgentPrompt(question: string): string {
+  return `${question}\n\n${SIDE_AGENT_INSTRUCTIONS}`;
+}
+
 const DEFAULT_OVERLAY_WIDTH = "75%";
 const DEFAULT_OVERLAY_MAX_HEIGHT = "80%";
 const OVERLAY_HEIGHT_RATIO = 0.8;
@@ -80,8 +118,8 @@ function summarizeToolArgs(toolName: string, args: Record<string, unknown> | und
 
 function buildContextDetail(messageCount: number, tokens?: number): string {
   return tokens !== undefined
-    ? `${messageCount} message(s) • approx ${tokens} token(s) • built-in coding tools enabled`
-    : `${messageCount} message(s) • built-in coding tools enabled`;
+    ? `${messageCount} message(s) • approx ${tokens} token(s) • read-only, edit/write blocked`
+    : `${messageCount} message(s) • read-only, edit/write blocked`;
 }
 
 function describeToolActivity(toolName: string, args: Record<string, unknown> | undefined): string {
@@ -423,6 +461,7 @@ async function createIsolatedSideSession(ctx: ExtensionCommandContext, pi: Exten
       cwd: ctx.cwd,
       agentDir: getAgentDir(),
       noExtensions: true,
+      extensionFactories: [readOnlyGuard],
     });
     await resourceLoader.reload();
 
@@ -601,7 +640,7 @@ async function runOutOfContextQuery(
     overlay.setPhase("Running isolated side agent...", contextDetail);
     overlay.updateActivity("running isolated side agent", "prompt sent to side agent");
     if (signal.aborted) return;
-    await session.prompt(prompt);
+    await session.prompt(buildSideAgentPrompt(prompt));
     if (signal.aborted) return;
 
     finalMessage ??= findLastAssistantMessage(session.messages ?? []);
