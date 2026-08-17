@@ -74,7 +74,8 @@ This is the part that matters most:
 - `edit` and `write` calls are **blocked** and come back as an error the side-agent can read
 - extension-provided tools are intentionally not loaded; an extension's background work could outlive the short-lived side session
 - `bash` is still `bash`; the read-only rule is an instruction, not a sandbox, so a command that modifies something has **real** effects
-- the side-agent sends the same tools and the same system prompt as your main session, so the provider's prompt cache is reused instead of paid for again; the read-only instructions ride at the end of the question for that reason
+- the side-agent adds nothing to the tools and nothing to the system prompt, so its request prefix stays as close to your main session's as it can be and a provider can reuse the cached prefix; that is why the read-only instructions ride at the end of the question
+- full reuse is not guaranteed: extension-registered tools are part of your main session's prefix but not the side-agent's, and providers that key their cache on the session id (such as `openai-codex`) see a different id for the side session
 
 So `/ooc` is isolated from your **conversation history**, but not from your **working directory**.
 
