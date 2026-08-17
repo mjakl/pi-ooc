@@ -450,9 +450,19 @@ async function createIsolatedSideSession(ctx: ExtensionCommandContext, pi: Exten
 
   try {
     let sessionManager = SessionManager.inMemory(ctx.cwd);
+    let forked = false;
     if (sourceSessionFile) {
       tempDir = await mkdtemp(join(tmpdir(), "pi-ooc-"));
-      sessionManager = SessionManager.forkFrom(sourceSessionFile, ctx.cwd, tempDir);
+      try {
+        sessionManager = SessionManager.forkFrom(sourceSessionFile, ctx.cwd, tempDir);
+        forked = true;
+      } catch {
+        // A session file that has nothing written to it yet cannot be forked,
+        // which is the case for the first command of a fresh session. Seed the
+        // side session from the parent's in-memory context instead.
+        await removeTempDir(tempDir);
+        tempDir = undefined;
+      }
     }
 
     // Side sessions are short-lived. Do not load extensions whose asynchronous
@@ -476,7 +486,7 @@ async function createIsolatedSideSession(ctx: ExtensionCommandContext, pi: Exten
       resourceLoader,
     });
 
-    if (!sourceSessionFile) {
+    if (!forked) {
       const parentContext = buildSessionContext(
         ctx.sessionManager.getEntries(),
         ctx.sessionManager.getLeafId(),
