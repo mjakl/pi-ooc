@@ -676,10 +676,7 @@ export default function (pi: ExtensionAPI) {
   pi.registerCommand(COMMAND_NAME, {
     description: "Ask a side question in an isolated agent session seeded with the current session context; the exchange stays out of the main session",
     handler: async (args, ctx) => {
-      if (!ctx.hasUI) {
-        console.error(`/${COMMAND_NAME} requires a UI-capable mode.`);
-        return;
-      }
+      if (ctx.mode !== "tui") return;
 
       const prompt = args.trim();
       if (!prompt) {
